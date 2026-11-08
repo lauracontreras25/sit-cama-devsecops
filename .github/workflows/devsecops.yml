@@ -1,0 +1,89 @@
+name: DevSecOps Complete Pipeline
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  push:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  security-events: write
+
+jobs:
+  secret-scan:
+    name: 1. Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  code-security:
+    name: 2. Tests, SAST & SCA
+    needs: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test:coverage --if-present
+      - name: SAST Semgrep
+        run: |
+          python3 -m pip install semgrep
+          semgrep scan --config auto --error --severity ERROR
+      - name: SCA Trivy
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: 'fs'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+  package-and-sign:
+    name: 3. Container Build, Scan & Cosign
+    needs: code-security
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_TAG: ghcr.io/${{ github.repository }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_TAG }}
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: ${{ env.IMAGE_TAG }}
+          severity: 'CRITICAL'
+          exit-code: '1'
+      - uses: sigstore/cosign-installer@v3
+      - run: cosign sign --yes ${{ env.IMAGE_TAG }}
+
+  dast-staging:
+    name: 4. DAST Scan
+    needs: package-and-sign
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          docker run -d --name app-staging -p 3000:3000 ghcr.io/${{ github.repository }}:${{ github.sha }}
+          sleep 5
+      - uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: 'http://localhost:3000'
+          cmd_options: '-a'
