@@ -86,7 +86,7 @@ jobs:
       - run: |
           docker run -d --name app-staging -p 3000:3000 ghcr.io/${{ github.repository }}:${{ github.sha }}
           sleep 5
-      - uses: zaproxy/action-baseline@v0.12.0
+      - uses: zaproxy/action-baseline@v0.15.0
         with:
           target: 'http://localhost:3000'
           cmd_options: '-a'
