@@ -78,6 +78,9 @@ jobs:
   dast-staging:
     name: 4. DAST Scan
     needs: package-and-sign
+    permissions:
+      contents: read
+      issues: write
     runs-on: ubuntu-latest
     steps:
       - run: |
